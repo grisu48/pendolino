@@ -20,7 +20,7 @@ OPTIONS:
 To connect to a Hyper-V instance, one needs to first add a COM to named pipe option to the virtual machine, e.g. for a VM named `jellyfish` one could run:
 
 ```
-Add-VMComPort -VMName jellyfish -Number 1 -Path \\.\pipe\jellyfish
+Set-VMComPort -VMName jellyfish -Number 1 -Path \\.\pipe\jellyfish
 ```
 
 Afterwards `pendolino` can bridge the serial port to a tcp socket on port 2001 via
