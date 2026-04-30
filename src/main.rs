@@ -1,6 +1,7 @@
 mod named_pipe;
 mod splice;
 
+use anyhow::{Result, bail};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::named_pipe::NamedPipe;
@@ -15,15 +16,63 @@ impl splice::AsyncReadable for TcpStream {
     }
 }
 
+struct Config {
+    pipe: String,      // Path to named pipe to connect to
+    bind_addr: String, // Local bind address
+}
+
+impl Config {
+    // Create new configuration instance with the default settings
+    pub fn new() -> Config {
+        Config {
+            pipe: "".to_string(),
+            bind_addr: "127.0.0.1:2001".to_string(),
+        }
+    }
+
+    pub fn from_args() -> Result<Config> {
+        let mut config = Config::new();
+        config.parse_args()?;
+        Ok(config)
+    }
+
+    // Parse program arguments
+    pub fn parse_args(&mut self) -> Result<()> {
+        let mut args = std::env::args();
+        args.next(); // Consume program name
+
+        if let Some(mut pipe) = args.next() {
+            // Add pipe prefix for localhost, if no prefix is given
+            if !pipe.starts_with(r"\\") {
+                pipe = format!(r"\\.\pipe\{pipe}")
+            }
+            self.pipe = pipe;
+        } else {
+            bail!("missing pipe argument");
+        }
+
+        if let Some(addr) = args.next() {
+            self.bind_addr = addr
+        }
+
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    let pipe = r"\\.\pipe\greenhorn";
-    let addr = "192.168.122.189:2001";
+    let cf = match Config::from_args() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("configuration error: {e}");
+            std::process::exit(1);
+        }
+    };
 
     eprintln!("pendolino v0.1");
-    let mut pipe = NamedPipe::new(pipe).unwrap();
-    let listener = TcpListener::bind(addr).await.unwrap();
-    println!("{}<==>{addr}", pipe.path());
+    let mut pipe = NamedPipe::new(cf.pipe.as_str()).unwrap();
+    let listener = TcpListener::bind(cf.bind_addr.as_str()).await.unwrap();
+    println!("{} <==> {}", pipe.path(), cf.bind_addr.as_str());
     let (mut socket, mut addr) = listener.accept().await.unwrap();
     println!("client {addr} connected");
     loop {
@@ -33,7 +82,6 @@ async fn main() {
             }
             Err(e) => {
                 // Allow client to reconnect
-                // TODO: String matching is ugly. Find a better way to detect connection errors
                 if e.kind() == std::io::ErrorKind::ConnectionAborted
                     || e.to_string() == "connection closed"
                 {
