@@ -1,12 +1,15 @@
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::thread::sleep;
+use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::bail;
 use tokio::io::AsyncWrite;
 use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::net::windows::named_pipe::NamedPipeClient;
+use tokio::net::windows::named_pipe::PipeInfo;
 
 use crate::splice;
 
@@ -34,6 +37,28 @@ impl NamedPipe {
 
     pub fn path(&self) -> &str {
         self.path.as_str()
+    }
+
+    pub fn info(&self) -> std::io::Result<PipeInfo> {
+        self.pipe.info()
+    }
+
+    // Attempt to reconnect the named pipe. attempts defines the number of reconnection attempts with 1 second delay between then.
+    pub fn reconnect(&mut self, attempts: i32) -> Result<()> {
+        let options = ClientOptions::new();
+        for attempt in 1..attempts {
+            match options.open(self.path()) {
+                Ok(pipe) => {
+                    self.pipe = pipe;
+                    return Ok(());
+                }
+                Err(err) => {
+                    eprintln!("reconnection attempt {attempt}/{attempts}: {err}");
+                }
+            };
+            sleep(Duration::from_secs(1));
+        }
+        bail!("timeout");
     }
 }
 

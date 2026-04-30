@@ -25,8 +25,8 @@ pub async fn splice(
     pipe: &mut (impl AsyncReadable + AsyncWriteExt + Unpin),
     socket: &mut (impl AsyncReadable + AsyncWriteExt + Unpin),
 ) -> io::Result<()> {
+    let mut buf = vec![0; 2 * 1024];
     loop {
-        let mut buf = vec![0; 2 * 1024]; // TODO: Move outside
         tokio::select! {
             Ok(_) = pipe.readable() =>
                 pump(pipe, socket, &mut buf).await?,
