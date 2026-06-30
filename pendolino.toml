@@ -1,0 +1,10 @@
+## Example configuration for pendolino
+## This configuration defines two named pipes, see below.
+
+[[Pipe]]
+Pipe = '\\.\pipe\Gargamel'
+Address = '127.0.0.1:1032'
+
+[[Pipe]]
+Pipe = '\\.\pipe\Azrael'
+Address = '0.0.0.0:1033'

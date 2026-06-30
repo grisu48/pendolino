@@ -2,15 +2,12 @@
 
 Bidirectional named pipe to tcp bridge.
 
-This program acts as a bridge between a [Windows named pipe](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipes) and a TCP socket. It is used for connecting a serial port on a Hyper-V hypervisor to an [openQA](https://open.qa/) instance.
+This program acts as a bridge between a set of [Windows named pipes](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipes) and TCP sockets.
+Each named pipe will be exposed to a defined TCP socket. The tool can be used for connecting a serial port on a Hyper-V hypervisor to an [openQA](https://open.qa/) instance.
 
 ## Usage
 
-```
-pendolino PIPE [BINDADDRESS]
-  PIPE                    Path to the named pipe
-  BINDADDRESS             Local address to bind listening tcp socket to
-```
+`pendolino` acts as a drop-in replacement for the aging `Named Pipe TCP Proxy`. It is configured via a [configuration file](pendolino.toml) in `C:\pendolino.toml`. The program supports a set of named pipes and will run just in the background. Once a named pipe appears, it will open a single TCP socket on a defined local address for this pipe.
 
 To connect to a Hyper-V instance, one needs to first add a COM to named pipe option to the virtual machine, e.g. for a VM named `jellyfish` one could run:
 
@@ -18,13 +15,6 @@ To connect to a Hyper-V instance, one needs to first add a COM to named pipe opt
 Set-VMComPort -VMName jellyfish -Number 1 -Path \\.\pipe\jellyfish
 ```
 
-Afterwards `pendolino` can bridge the serial port to a tcp socket on port 2001 via
-
-```
-pendolino -v \\.\pipe\jellyfish 127.0.0.1:2001
-```
-
 ## Credits
 
 * Inspired by https://github.com/pratikpc/named-pipe-to-tcp-proxy
-

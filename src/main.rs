@@ -1,8 +1,16 @@
 mod named_pipe;
 mod splice;
 
-use anyhow::{Result, bail};
-use tokio::net::{TcpListener, TcpStream};
+use std::{fs, time::Duration};
+
+use anyhow::Result;
+use serde::Deserialize;
+use tokio::{
+    fs::try_exists,
+    net::{TcpListener, TcpStream},
+    task,
+    time::sleep,
+};
 
 use crate::named_pipe::NamedPipe;
 
@@ -16,93 +24,112 @@ impl splice::AsyncReadable for TcpStream {
     }
 }
 
+const ERR_RUNTIME: i32 = 100; // General runtime error
+const ERR_NO_CONFIG: i32 = 101; // Configuration file doesn't exist
+const ERR_CONFIG_INVAL: i32 = 102; // Configuration (file) is invalid
+
+#[derive(Deserialize)]
 struct Config {
-    pipe: String,      // Path to named pipe to connect to
-    bind_addr: String, // Local bind address
+    #[serde(rename = "Pipe")]
+    pipes: Vec<Pipe>, // Collection of pipe definitions we should act on
+}
+
+#[derive(Deserialize)]
+struct Pipe {
+    #[serde(rename = "Pipe")]
+    src: String, // Path to named pipe
+    #[serde(rename = "Address")]
+    addr: String, // Local server address
 }
 
 impl Config {
-    // Create new configuration instance with the default settings
-    pub fn new() -> Config {
-        Config {
-            pipe: "".to_string(),
-            bind_addr: "127.0.0.1:2001".to_string(),
-        }
-    }
-
-    pub fn from_args() -> Result<Config> {
-        let mut config = Config::new();
-        config.parse_args()?;
-        Ok(config)
-    }
-
     // Parse program arguments
-    pub fn parse_args(&mut self) -> Result<()> {
-        let mut args = std::env::args();
-        args.next(); // Consume program name
-
-        if let Some(mut pipe) = args.next() {
-            // Add pipe prefix for localhost, if no prefix is given
-            if !pipe.starts_with(r"\\") {
-                pipe = format!(r"\\.\pipe\{pipe}")
-            }
-            self.pipe = pipe;
-        } else {
-            bail!("missing pipe argument");
-        }
-
-        if let Some(addr) = args.next() {
-            self.bind_addr = addr
-        }
-
-        Ok(())
+    pub fn parse_file(filename: &str) -> Result<Config> {
+        let contents = fs::read_to_string(filename)?;
+        let config: Config = toml::from_str(contents.as_str())?;
+        Ok(config)
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let cf = match Config::from_args() {
+    let cf_filename = "C:\\pendolino.toml";
+    if try_exists(cf_filename).await.unwrap() == false {
+        eprintln!("configuration file {cf_filename} doesn't exist. Cannot start");
+        std::process::exit(ERR_NO_CONFIG);
+    }
+
+    let cf = match Config::parse_file(cf_filename) {
         Ok(config) => config,
-        Err(e) => {
-            eprintln!("configuration error: {e}");
-            std::process::exit(1);
+        Err(err) => {
+            eprintln!("configuration error: {err}");
+            std::process::exit(ERR_CONFIG_INVAL);
         }
     };
 
-    eprintln!("pendolino v0.1");
-    let mut pipe = NamedPipe::new(cf.pipe.as_str()).unwrap();
-    let listener = TcpListener::bind(cf.bind_addr.as_str()).await.unwrap();
-    println!("{} <==> {}", pipe.path(), cf.bind_addr.as_str());
-    let (mut socket, mut addr) = listener.accept().await.unwrap();
-    println!("client {addr} connected");
-    loop {
-        match splice::splice(&mut pipe, &mut socket).await {
-            Ok(_) => {
-                panic!("unexpected EOF");
-            }
-            Err(e) => {
-                // Allow client to reconnect
-                if e.kind() == std::io::ErrorKind::ConnectionAborted
-                    || e.to_string() == "connection closed"
-                {
-                    eprintln!("client disconnected ({})", e.to_string());
-                    (socket, addr) = listener.accept().await.unwrap();
-                    eprintln!("client {addr} connected");
-                }
-                // Reconnect named pipe on pipe errors (e.g. when the VM reboots)
-                else if let Err(_) = pipe.info() {
-                    eprintln!("reconnecting pipe ... ");
-                    if let Err(err) = pipe.reconnect(30) {
-                        eprintln!("pipe reconnection failed: {err}");
-                        std::process::exit(1_);
-                    }
+    eprintln!("pendolino v0.2");
 
-                    eprintln!("pipe reconnected");
-                } else {
-                    eprintln!("splice error: {e} ({})", e.kind());
-                    std::process::exit(1);
+    let mut tasks = Vec::new();
+    for pipe in cf.pipes {
+        let task = task::spawn(worker_loop(pipe.src.clone(), pipe.addr.clone()));
+        tasks.push(task);
+    }
+    for task in tasks {
+        if let Err(err) = task.await {
+            eprintln!("task error: {err}");
+            std::process::exit(ERR_RUNTIME);
+        }
+    }
+}
+
+async fn worker_loop(path: String, address: String) {
+    loop {
+        let mut pipe = match NamedPipe::new(path.as_str()) {
+            Ok(pipe) => pipe,
+            Err(err) => {
+                // TODO: Better error matching, this works for now but can be improved.
+                if !err
+                    .to_string()
+                    .contains("The system cannot find the file specified.")
+                {
+                    eprintln!("pipe {path} error: {err}");
                 }
+                sleep(Duration::from_millis(500)).await;
+                continue;
             }
         };
+
+        let listener = TcpListener::bind(address.as_str()).await.unwrap();
+        println!("{} <==> ({} -- ...)", pipe.path(), address.as_str());
+        let (mut socket, addr) = listener.accept().await.unwrap();
+        println!("{} <==> ({} -- {})", pipe.path(), address.as_str(), addr);
+        loop {
+            match splice::splice(&mut pipe, &mut socket).await {
+                Ok(_) => {
+                    panic!("unexpected EOF");
+                }
+                Err(e) => {
+                    // Allow client to reconnect
+                    if e.kind() == std::io::ErrorKind::ConnectionAborted
+                        || e.to_string() == "connection closed"
+                    {
+                        eprintln!("client disconnected ({})", e.to_string());
+                    }
+                    // Reconnect named pipe on pipe errors (e.g. when the VM reboots)
+                    else if let Err(_) = pipe.info() {
+                        if let Err(err) = pipe.reconnect(10) {
+                            eprintln!("pipe error: {err}");
+                        } else {
+                            // Pipe is reconnected, let's continue
+                            continue;
+                        }
+                    } else {
+                        eprintln!("splice error: {e} ({})", e.kind());
+                    }
+                    break;
+                }
+            };
+        }
+        eprintln!("{} closed", pipe.path())
     }
 }
